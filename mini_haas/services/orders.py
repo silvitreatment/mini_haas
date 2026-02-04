@@ -1,16 +1,76 @@
 """Order service: create, allocate, provision."""
 
 from __future__ import annotations
-from sqlalchemy import select
-from sqlalchemy import Session 
-from ..models import Order, OrderItem, Server, ServerModel
-from ..models.enums import OrderStatus, ServerState
 
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy import Session
+
+from ..extensions import db
+from ..models import Datacenter, Order, OrderItem, ProvisionJob, Server, ServerModel
+from ..models.enums import OrderStatus, ServerState
+from .errors import NotFoundError, ValidationError
+
+
+def _parse_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _parse_positive_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
 
 def create_order(_payload: dict[str, Any]):
-    raise NotImplementedError
+    name = (_payload.get("datacenter") or "").strip()
+    cpu = _parse_positive_int(_payload.get("cpu_cores"))
+    ram = _parse_positive_int(_payload.get("ram_gb"))
+    nvme = _parse_positive_number(_payload.get("nvme_tb"))
+
+    if not name or cpu is None or ram is None or nvme is None:
+        raise ValidationError("Invalid payload")
+
+    datacenter = db.session.execute(
+        select(Datacenter).where(Datacenter.name == name)
+    ).scalar_one_or_none()
+    if not datacenter:
+        raise NotFoundError("datacenter not found")
+
+    order = Order(
+        datacenter_id=datacenter.id,
+        requested_cpu_cores=cpu,
+        requested_ram_gb=ram,
+        requested_nvme_tb=nvme,
+    )
+    db.session.add(order)
+    db.session.commit()
+
+    return {
+        "id": order.id,
+        "datacenter": datacenter.name,
+        "requested": {
+            "cpu_cores": order.requested_cpu_cores,
+            "ram_gb": order.requested_ram_gb,
+            "nvme_tb": float(order.requested_nvme_tb),
+        },
+        "status": order.status.value,
+    }
 
 
 def allocate_order(session : Session, order_id : int):
@@ -80,4 +140,25 @@ def provision_order(_order_id: int):
 
 
 def get_order(_order_id: int):
-    raise NotImplementedError
+    order = db.session.get(Order, _order_id)
+    if not order:
+        raise NotFoundError("order not found")
+
+    servers = [item.server.barcode for item in order.items]
+    jobs = [
+        {"server": job.server.barcode, "status": job.status.value}
+        for job in order.provision_jobs
+    ]
+
+    return {
+        "id": order.id,
+        "datacenter": order.datacenter.name,
+        "requested": {
+            "cpu_cores": order.requested_cpu_cores,
+            "ram_gb": order.requested_ram_gb,
+            "nvme_tb": float(order.requested_nvme_tb),
+        },
+        "status": order.status.value,
+        "servers": servers,
+        "provision_jobs": jobs,
+    }
