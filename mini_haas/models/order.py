@@ -4,13 +4,12 @@ from ..extensions import db
 from .enums import OrderStatus
 from .mixins import IdMixin, TimestampMixin
 
-
 class Order(IdMixin, TimestampMixin, db.Model):
     __tablename__ = "orders"
 
     datacenter_id = db.Column(db.Integer, db.ForeignKey("datacenter.id"), nullable=False)
 
-    requested_cpu_cores = db.Column(db.Integer, nullable=False)
+    requested_cpu_cores  = db.Column(db.Integer, nullable=False)
     requested_ram_gb = db.Column(db.Integer, nullable=False)
     requested_nvme_tb = db.Column(db.Numeric(6, 2), nullable=False)
 
