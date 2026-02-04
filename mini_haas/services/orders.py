@@ -5,12 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy import Session
 
 from ..extensions import db
 from ..models import Datacenter, Order, OrderItem, ProvisionJob, Server, ServerModel
 from ..models.enums import OrderStatus, ServerState
-from .errors import NotFoundError, ValidationError
+from .errors import ConflictError, NotFoundError, ValidationError
 
 
 def _parse_positive_int(value: Any) -> int | None:
@@ -73,22 +72,21 @@ def create_order(_payload: dict[str, Any]):
     }
 
 
-def allocate_order(session : Session, order_id : int):
-    """Transactional allocation using SELECT FOR UPDATE."""
-    order = session.get(Order, order_id)
+def allocate_order(order_id: int):
+    order = db.session.get(Order, order_id)
     
     if not order:
-        raise "order not found"
+        raise NotFoundError("order not found")
     if order.status != OrderStatus.NEW:
-        raise "order not in new status"
+        raise ConflictError("order not in correct status")
     
     candidates = (
-        session.execute(
+        db.session.execute(
             select(Server)
             .join(Server.model)
             .where(
                 Server.state == ServerState.AVAILABLE,
-                Server.datacenter_id == order.datacentr_id,
+                Server.datacenter_id == order.datacenter_id,
             )
             .order_by(
                 ServerModel.cpu_cores.desc(),
@@ -103,7 +101,6 @@ def allocate_order(session : Session, order_id : int):
     picked = []
     cpu = ram = 0
     nvme = 0
-    
     for srv in candidates:
         picked.append(srv)
         cpu += srv.model.cpu_cores
@@ -112,11 +109,12 @@ def allocate_order(session : Session, order_id : int):
         if cpu >= order.requested_cpu_cores and ram >= order.requested_ram_gb and nvme >= float(order.requested_nvme_tb):
             break
     if cpu < order.requested_cpu_cores or ram < order.requested_ram_gb or nvme < float(order.requested_nvme_tb):
-        raise "insufficient capacity"
-    with session.connect() as conn:
+        raise ConflictError("insufficient capacity")
+    server_ids = [srv.id for srv in picked]
+    with db.session.begin():
         
         servers = (
-            session.execute(
+            db.session.execute(
                 select(Server)
                 .where(Server.id.in_(server_ids))
                 .with_for_update()
@@ -125,17 +123,22 @@ def allocate_order(session : Session, order_id : int):
             .all()
         )
         if any(s.state != ServerState.AVAILABLE for s in servers):
-            raise "capacity changed, replan required"
+            raise ConflictError("capacity changed, replan required")
         
         for s in servers:
             s.state = ServerState.ALLOCATED
-            s.allocated_order_id = order.id 
-            session.add(OrderItem(order_id=order_id, server_id = s.id))
-    raise NotImplementedError
+            s.allocated_order_id = order.id
+            db.session.add(OrderItem(order_id=order_id, server_id=s.id))
+        order.status = OrderStatus.ALLOCATED
+
+    return {
+        "order_id": order.id,
+        "status": order.status.value,
+        "servers": [s.barcode for s in servers],
+    }
 
 
 def provision_order(_order_id: int):
-    """Create provision jobs and set PROVISIONING."""
     raise NotImplementedError
 
 
