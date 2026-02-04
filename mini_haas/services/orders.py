@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from ..extensions import db
 from ..models import Datacenter, Order, OrderItem, ProvisionJob, Server, ServerModel
-from ..models.enums import OrderStatus, ServerState
+from ..models.enums import OrderStatus, ProvisionStatus, ServerState
 from .errors import ConflictError, NotFoundError, ValidationError
 
 
@@ -139,7 +139,36 @@ def allocate_order(order_id: int):
 
 
 def provision_order(_order_id: int):
-    raise NotImplementedError
+    order = db.session.get(Order, _order_id)
+    if not order:
+        raise NotFoundError("order not found")
+    if order.status != OrderStatus.ALLOCATED:
+        raise ConflictError("order not in correct status")
+
+    server_ids = [item.server_id for item in order.items]
+    if not server_ids:
+        raise ConflictError("no servers allocated")
+
+    with db.session.begin():
+        servers = (
+            db.session.execute(
+                select(Server).where(Server.id.in_(server_ids)).with_for_update()
+            )
+            .scalars()
+            .all()
+        )
+        for server in servers:
+            db.session.add(
+                ProvisionJob(
+                    order_id=order.id,
+                    server_id=server.id,
+                    status=ProvisionStatus.PENDING,
+                )
+            )
+            server.state = ServerState.PROVISIONING
+        order.status = OrderStatus.PROVISIONING
+
+    return {"order_id": order.id, "status": order.status.value}
 
 
 def get_order(_order_id: int):
