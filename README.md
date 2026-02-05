@@ -1,10 +1,10 @@
 # mini_haas (MVP)
 
-Минимальная архитектура для Mini‑HaaS: инвентарь → заказ → атомарное резервирование → provisioning.
+Mini‑HaaS: инвентарь → заказ → атомарное резервирование → provisioning.
 
 ## Структура
 - `mini_haas/app.py` - create_app
-- `mini_haas/models/` - таблицы MVP
+- `mini_haas/models/` - таблицы 
 - `mini_haas/services/` - бизнес-правила
 - `mini_haas/api/` - REST эндпоинты
 - `docs/architecture.md` - архитектура
